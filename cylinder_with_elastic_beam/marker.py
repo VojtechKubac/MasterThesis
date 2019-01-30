@@ -108,9 +108,9 @@ def give_marked_mesh(mesh_coarseness = 40, refine = False, ALE = True):
             flag = 0
             for c in cells(f):
                 if domains[c] == 0:
-                    flag = flag | 1
+                    flag |= 1
                 if domains[c] == 1:
-                    flag = flag | 2
+                    flag |= 2
             if flag == 3:
                 interface[f] = 1
 
@@ -120,8 +120,8 @@ def give_marked_mesh(mesh_coarseness = 40, refine = False, ALE = True):
 def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40, refine = False):
     # generate multimesh
     approx_circle_with_edges = 20
-    beam_mesh_legth = g_radius + 1.5*gEL
-    beam_mesh_width = 2.0*g_radius
+    beam_mesh_length = g_radius + 1.5*gEL
+    beam_mesh_width  = 2.0*g_radius
     beam_mesh_X = gX
     beam_mesh_Y = gY - 2.0*g_radius
 
@@ -129,7 +129,7 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
     multimesh = MultiMesh()
     bg_geometry = mshr.Rectangle(Point(0.0, 0.0), Point(gL, gW)) - \
                      mshr.Circle(Point(gX, gY), g_radius, approx_circle_with_edges)
-    bg_mesh = mshr.generate_mesh(bg_geometry, bg_h)
+    bg_mesh = mshr.generate_mesh(bg_geometry, background_coarseness)
     if refine:
         parameters["refinement_algorithm"] = "plaza_with_parent_facets"
         for k in range(2):		# 2
@@ -146,9 +146,9 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
     multimesh.add(bg_mesh)
 
     beam_geometry = mshr.Rectangle(Point(beam_mesh_X,beam_mesh_Y ), \
-                Point(beam_mesh_X + beam_mesh_length, beam_mesh_Y + baem_mesh_width)) \
+                Point(beam_mesh_X + beam_mesh_length, beam_mesh_Y + beam_mesh_width)) \
                 - mshr.Circle(Point(gX, gY), g_radius, approx_circle_with_edges)
-    beam_mesh = mshr.generate_mesh(beam_geometry, beam_h)
+    beam_mesh = mshr.generate_mesh(beam_geometry, elasticity_coarseness)
     multimesh.add(beam_mesh)
     multimesh.build()
 
@@ -208,43 +208,21 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
 
     Eulerian_fluid = MeshFunction('size_t', multimesh.part(0), 1)
     Eulerian_fluid.set_all(0)
-    
 
-    return(multimesh, inflow_bndry, outflow_bndry, walls, cylinder, ALE_domains, Eulerian_fluid, A, B)
-
-    '''
-    # construct facet and domain markers
-    interface         = MeshFunction('size_t', beam_mesh, 1)	# interface marker
-    unelastic_surface = MeshFunction('size_t', beam_mesh, 1)	# circle surface neighbouring with fluid (not with elastic solid)
-    domains           = MeshFunction('size_t', beam_mesh, 2, beam_mesh.domains())
-    interface.set_all(0)
-    unelastic_surface.set_all(0)
-    domains.set_all(0)
-    elasticity.mark(domains, 1)
-    cylinder.mark(bndry, _CIRCLE)
-    for f in facets(beam_mesh):
-        if f.exterior():
-            mp = f.midpoint()
-            if near(mp[0], 0.0):
-                bndry[f] = _INFLOW 				
-            elif near(mp[1], 0.0) or near(mp[1], gW):
-                bndry[f] = _WALLS			
-            elif near(mp[0], gL):
-                bndry[f] = _OUTFLOW		
-            elif bndry[f] == _CIRCLE and mp[0] > gX and mp[1] < gY + gEH + DOLFIN_EPS and mp[1] > gY - gEH - DOLFIN_EPS:
-                unelastic_surface[f] = 1
-        else:
+    FS_interface = MeshFunction('size_t', multimesh.part(1), 1)
+    FS_interface.set_all(0)
+    for f in facets(multimesh.part(1)):
+        if not f.exterior():
             flag = 0
             for c in cells(f):
-                if domains[c] == 0:
-                    flag = flag | 1
-                if domains[c] == 1:
-                    flag = flag | 2
+                if ALE_domains[c] == 0:
+                    flag |= 1  
+                if ALE_domains[c] == 1:
+                    flag |= 2
             if flag == 3:
-                interface[f] = 1
-    '''
+                FS_interface[f] = 1
+    
 
-    info("\t\t-done") 
-    return(multimesh, inflow_bndry, outflow_bndry, walls, cylinder)#, interface, 
-     #       unelastic_surface, domains, A, B)
-
+    return(multimesh, 
+            inflow_bndry, outflow_bndry, walls, cylinder, 
+            ALE_domains, Eulerian_fluid, FS_interface, A, B)

@@ -55,13 +55,12 @@ class Problem(NonlinearProblem):
         [bc.apply(A) for bc in self.bcs]
 
 class Flow(object):
-    def __init__(self, multimesh, bndry, dt, theta, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, result, 
-            *args, **kwargs):
+    def __init__(self, multimesh, inflow_bndry, outflow_bndry, walls, cylinder, dt, theta, 
+            v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, result, *args, **kwargs):
 
         result = result
 
         self.multimesh  = multimesh
-        self.bndry = bndry
         self.dt    = dt
         self.t     = 0.0
         self.v_max = v_max
@@ -85,19 +84,23 @@ class Flow(object):
         MV = MultiMeshFunctionSpace(self.multimesh, eV1)
         self.MV = MV
 
+        # Create subspaces for boundary conditions
+        self.V = MultiMeshSubSpace(self.W, 0)
+        self.U = MultiMeshSubSpace(self.W, 1)
+        self.P = MultiMeshSubSpace(self.W, 2)
 
         # Set boundary conditions
-        self.v_in = Expression(("t<2.0? 0.5*(1.0 - cos(0.5*pi*t))*v_max*4/(gW*gW)*(x[1]*(gW - x[1])): 
+        self.v_in = Expression(("t<2.0? 0.5*(1.0 - cos(0.5*pi*t))*v_max*4/(gW*gW)*(x[1]*(gW - x[1])): \
             v_max*4/(gW*gW)*(x[1]*(gW - x[1]))", "0.0"),\
                   degree = 2, v_max = Constant(self.v_max), gW = Constant(gW), t = self.t)
 
-        bc_u_in     = MultiMeshDirichletBC(self.W.sub(1), Constant((0.0, 0.0)), inflow_bndry)
-        bc_u_walls  = MultiMeshDirichletBC(self.W.sub(1), Constant((0.0, 0.0)), walls)
-        bc_u_out    = MultiMeshDirichletBC(self.W.sub(1), Constant((0.0, 0.0)), outflow_bndry)
-        bc_u_circle = MultiMeshDirichletBC(self.W.sub(1), Constant((0.0, 0.0)), cylinder)
-        bc_v_in     = MultiMeshDirichletBC(self.W.sub(0), self.v_in,            inflow_bndry)
-        bc_v_walls  = MultiMeshDirichletBC(self.W.sub(0), Constant((0.0, 0.0)), walls)
-        bc_v_circle = MultiMeshDirichletBC(self.W.sub(0), Constant((0.0, 0.0)), cylinder)
+        bc_u_in     = MultiMeshDirichletBC(self.U, Constant((0.0, 0.0)), inflow_bndry)
+        bc_u_walls  = MultiMeshDirichletBC(self.U, Constant((0.0, 0.0)), walls)
+        bc_u_out    = MultiMeshDirichletBC(self.U, Constant((0.0, 0.0)), outflow_bndry)
+        bc_u_circle = MultiMeshDirichletBC(self.U, Constant((0.0, 0.0)), cylinder)
+        bc_v_in     = MultiMeshDirichletBC(self.V, self.v_in,            inflow_bndry)
+        bc_v_walls  = MultiMeshDirichletBC(self.V, Constant((0.0, 0.0)), walls)
+        bc_v_circle = MultiMeshDirichletBC(self.V, Constant((0.0, 0.0)), cylinder)
 
         self.bcs = [bc_v_in, bc_v_walls, bc_v_circle, bc_u_in, bc_u_walls, bc_u_circle, bc_u_circle]
 
@@ -142,21 +145,21 @@ class Flow(object):
         self.T0 = -self.p0*I  + 2*sym(grad(self.v0))
 
         # write equations for fluid on overlapping mesh
-        a_fluid_ALE  = inner(self.S_f , grad(v_))*dX(0) \
-                + inner(JJ *self.rho_f*grad(self.v )*inv(self.FF ).T*(self.v  - du), v_)*dX(0)
-        a_fluid0_ALE = inner(self.S_f0, grad(v_))*dX(0) \
-                + inner(JJ0*self.rho_f*grad(self.v0)*inv(self.FF0).T*(self.v0 - du), v_)*dX(0)
+        a_fluid_ALE  = inner(self.S_f , grad(v_))*dX \
+                + inner(JJ *self.rho_f*grad(self.v )*inv(self.FF ).T*(self.v  - du), v_)*dX
+        a_fluid0_ALE = inner(self.S_f0, grad(v_))*dX \
+                + inner(JJ0*self.rho_f*grad(self.v0)*inv(self.FF0).T*(self.v0 - du), v_)*dX
 
-        b_fluid_ALE  = inner(grad(self.u ), grad(u_))*dX(0) \
-                + inner(div(JJ *inv(self.FF )*self.v),  p_)*dX(0)
-        b_fluid0_ALE = inner(grad(self.u0), grad(u_))*dX(0) \
-                + inner(div(JJ0*inv(self.FF0)*self.v0), p_)*dX(0)
+        b_fluid_ALE  = inner(grad(self.u ), grad(u_))*dX \
+                + inner(div(JJ *inv(self.FF )*self.v),  p_)*dX
+        b_fluid0_ALE = inner(grad(self.u0), grad(u_))*dX \
+                + inner(div(JJ0*inv(self.FF0)*self.v0), p_)*dX
 
         F_fluid_ALE  = theta*(a_fluid_ALE  + b_fluid_ALE) \
                 + (1.0 - theta)*(a_fluid0_ALE + b_fluid0_ALE)
 
         # write equation for solid
-        F_solid  = theta*inner(S_s , grad(v_))*dX(1) + (1.0 - theta)*inner(S_s0, grad(v_))*dX(1)
+        F_solid  = theta*inner(S_s , grad(v_))*dX + (1.0 - theta)*inner(S_s0, grad(v_))*dX
 
         # write equations for fluid on background mesh
         a_fluid_BG  = inner(self.T , grad(v_))*dX + inner(grad(self.v )*self.v , v_)*dX
@@ -165,19 +168,19 @@ class Flow(object):
         b_fluid_BG  = inner(div(self.v),  p_)*dX    # no artificial deformation here
         b_fluid0_BG = inner(div(self.v0), p_)*dX    # no artificial deformation here
 
-        F_fluid_BG  = 0.5*(a_fluid  + b_fluid) + 0.5*(a_fluid0 + b_fluid0)
+        F_fluid_BG  = 0.5*(a_fluid_BG  + b_fluid_BG) + 0.5*(a_fluid0_BG + b_fluid0_BG)
 
         # discretization of temporal derivative
-        F_temporal = JJ*self.rho_f*(1.0/self.dt)*inner(self.v - self.v0, v_)*dX(0) \
-                + (1.0/self.dt)*rho_s*inner(self.v - self.v0, v_)*dX(1) \
-                + inner(du, u_)*dX(1) - ( theta*inner(self.v, u_)*dX(1) \
-                + (1.0 - theta)*inner(self.v0, u_)*dX(1) )
+        F_temporal = JJ*self.rho_f*(1.0/self.dt)*inner(self.v - self.v0, v_)*dX \
+                + (1.0/self.dt)*rho_s*inner(self.v - self.v0, v_)*dX \
+                + inner(du, u_)*dX - ( theta*inner(self.v, u_)*dX \
+                + (1.0 - theta)*inner(self.v0, u_)*dX )
 
         # impose zero mean value of pressure on outflow and continuity over F-S interface
-        F_press = theta*(self.p*c_*ds(_OUTFLOW) + jump(self.p*d_)*dS(1) \
-                + p_*self.c*ds(_OUTFLOW) + jump(p_*self.d)*dS(1)) \
-                + (1.0 - theta)*(self.p0*c_*ds(_OUTFLOW) + jump(self.p0*d_)*dS(1) \
-                + p_*self.c0*ds(_OUTFLOW) + jump(p_*self.d0)*dS(1))
+        F_press = theta*(self.p*c_*ds(_OUTFLOW) + jump(self.p*d_)*dS \
+                + p_*self.c*ds(_OUTFLOW) + jump(p_*self.d)*dS) \
+                + (1.0 - theta)*(self.p0*c_*ds(_OUTFLOW) + jump(self.p0*d_)*dS \
+                + p_*self.c0*ds(_OUTFLOW) + jump(p_*self.d0)*dS)
 
         # continuity (and stabilization) over F-F interface
         # (sketchy version)
@@ -185,15 +188,15 @@ class Flow(object):
             return outer(v('+'), n('+')) + outer(v('-'), n('-'))
         alpha = 4.0
         
-        F_interface = inner(jump(self.T, self.n), avg(grad(u_)))*dI \
-                    + alpha*inner(jump(self.v), jump(u_))*dI \
-                    + alpha*inner(jump(self.p), jump(p_))*dI
+        F_interface = inner(avg(self.T), tensor_jump(v_, self.n))*dI \
+                    + alpha*inner(jump(self.v), jump(v_))*dI \
+                    + alpha*jump(self.p * p_)*dS
 
 
         # write final equation
-        F = F_temporal + F_fluid + F_solid + F_press + F_interface
+        F = F_temporal + F_fluid_ALE + F_fluid_BG + F_solid + F_press + F_interface
 
-        J = derivative(F, self.w)
+        J = derivative(F, self.w)   # works with FEniCS 2017 but not with FEniCS 2018
 
         #(self.v, self.u, self.p, self.c, self.d) = self.w.split(True)
         #(self.v0, self.u0, self.p0, self.c0, self.d0) = self.w0.split(True)
@@ -239,9 +242,10 @@ class Flow(object):
 result = "results_CutFEM"		# name of folder containing results
 # load mesh with boundary and domain markers
 import marker
-(multimesh, inflow_bndry, outflow_bndry, walls, cylinder, ALE_domains, Eulerian_fluid, A, B) \
-        = marker.give_marked_multimesh(backgground_coarseness = 50, 
-                                       elasticity_coarseness  = 40)
+(multimesh, inflow_bndry, outflow_bndry, walls, cylinder, 
+        ALE_domains, Eulerian_fluid, FS_interface, A, B) = \
+        marker.give_marked_multimesh(background_coarseness = 50, 
+                                     elasticity_coarseness = 40)
 
 # domain (used while building mesh) - needed for inflow condition
 gW = 0.41
@@ -252,15 +256,11 @@ _WALLS   = 2
 _CIRCLE  = 3
 _OUTFLOW = 4
 
-dx_Euler = dx(domain = multimesh.part(0), subdomain_data = Euler_fluid)
+# measures for integrating over single mesh
+# (might come to play when trying to write equations properly)
+dx_Euler = dx(domain = multimesh.part(0), subdomain_data = Eulerian_fluid)
 dx_ALE   = dx(domain = multimesh.part(1), subdomain_data = ALE_domains)
 
-
-
-dX  = dX(domain=mesh, subdomain_data = domains)
-ds  = ds(domain=mesh, subdomain_data = bndry)
-dS  = dS(domain=mesh, subdomain_data = interface)
-dss = ds(domain=mesh, subdomain_data = unelastic_surface)
 
 # time stepping
 dt    = 0.01
@@ -279,7 +279,8 @@ nu_f  = Constant(1.0e-03)
 mu_f  = nu_f*rho_f
 
 
-flow = Flow(multimesh, bndry, dt, theta, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, result)
+flow = Flow(multimesh, inflow_bndry, outflow_bndry, walls, cylinder, dt, 
+        theta, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, result)
 
 t = 0.0
 
