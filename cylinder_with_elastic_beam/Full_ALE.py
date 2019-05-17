@@ -234,7 +234,7 @@ result = "results_FullALE"		# name of folder containing results
 # load mesh with boundary and domain markers
 import marker
 (mesh, bndry, interface, unelastic_surface, domains, A, B) \
-        = marker.give_marked_mesh(mesh_coarseness = 50, refine = True, ALE = True)
+        = marker.give_marked_mesh(mesh_coarseness = 50, refinement = True, ALE = True)
 
 # domain (used while building mesh) - needed for inflow condition
 gW = 0.41

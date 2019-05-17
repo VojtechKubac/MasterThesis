@@ -20,7 +20,7 @@ _WALLS   = 2
 _CIRCLE  = 3
 _OUTFLOW = 4
 
-def generate_mesh(par, refine, ALE):
+def generate_mesh(par, refinement, ALE):
 
     # construct mesh
     geometry = mshr.Rectangle(Point(0.0, 0.0), Point(gL, gW)) - mshr.Circle(Point(gX, gY), g_radius, 20)
@@ -29,7 +29,7 @@ def generate_mesh(par, refine, ALE):
             Point(gX + g_radius + gEL, gY + 0.5*gEH)))
     mesh = mshr.generate_mesh(geometry, par)
 
-    if refine:
+    if refinement:
         parameters["refinement_algorithm"] = "plaza_with_parent_facets"
         for k in range(2):		# 2
             cf = MeshFunction('bool', mesh, 2)
@@ -46,7 +46,7 @@ def generate_mesh(par, refine, ALE):
 
     return(mesh)
 
-def give_marked_mesh(mesh_coarseness = 40, refine = False, ALE = True):
+def give_marked_mesh(mesh_coarseness = 40, refinement = False, ALE = True):
     '''
     Generates mesh and defines boundary and domain classification functions.
     If ALE == True, then the mesh fits the initial position of elastic beam,
@@ -55,7 +55,7 @@ def give_marked_mesh(mesh_coarseness = 40, refine = False, ALE = True):
 
     info("Generating mesh...")
 
-    mesh = generate_mesh(mesh_coarseness, refine, ALE)
+    mesh = generate_mesh(mesh_coarseness, refinement, ALE)
 
     class Cylinder(SubDomain):
         def snap(self, x):
@@ -117,7 +117,7 @@ def give_marked_mesh(mesh_coarseness = 40, refine = False, ALE = True):
     info("\t -done") 
     return(mesh, bndry, interface, unelastic_surface, domains, A, B)
 
-def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40, refine = False):
+def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40, refinement = False):
     # generate multimesh
     approx_circle_with_edges = 20
     beam_mesh_length = g_radius + 1.5*gEL
@@ -130,7 +130,7 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
     bg_geometry = mshr.Rectangle(Point(0.0, 0.0), Point(gL, gW)) - \
                      mshr.Circle(Point(gX, gY), g_radius, approx_circle_with_edges)
     bg_mesh = mshr.generate_mesh(bg_geometry, background_coarseness)
-    if refine:
+    if refinement:
         parameters["refinement_algorithm"] = "plaza_with_parent_facets"
         for k in range(2):		# 2
             cf = MeshFunction('bool', bg_mesh, 2)
