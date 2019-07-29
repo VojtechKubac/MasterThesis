@@ -2,36 +2,44 @@
 SHELL=/bin/bash
 .SECONDARY:
 
-DATA:=meshes
+DIR:=meshes
 
-all: mesh_files
+NAME:= mesh_ALE
 
-mesh_files: $(DATA)/mesh1.h5 $(DATA)/mesh1_refined.h5 $(DATA)/mesh2.h5
+all: all_meshes
 
-$(DATA):
-	mkdir -p $(DATA)
+all_meshes: $(NAME)_L0 $(NAME)_L1 $(NAME)_L2  # $(NAME)_L3 $(NAME)_L4
 
-$(DATA)/mesh1.h5: $(DATA)/mesh1.xml
-	python3 xml2h5.py $(DATA)/mesh1
-
-$(DATA)/mesh1_refined.h5: $(DATA)/mesh1_refined.xml
-	python3 xml2h5.py $(DATA)/mesh1_refined
-
-$(DATA)/mesh2.h5: $(DATA)/mesh2.xml
-	python3 xml2h5.py $(DATA)/mesh2
-
-$(DATA)/%: $(DATA)/%.h5
+$(NAME)%: $(DIR)/$(NAME)%.h5
 	echo $< $@ $* $^
 
+$(DIR):
+	mkdir -p $(DIR)
 
-$(DATA)/%.xml : $(DATA)/%.msh
+$(DIR)/%.h5: $(DIR)/%.xml 
+	python3 mesh_process.py --mesh $(DIR)/$*
+
+$(DIR)/%_L0.msh: %.geo | $(DIR)
+	gmsh -format msh2 -2 -setnumber levels 0 -o $@ $< 
+
+$(DIR)/%_L1.msh: %.geo | $(DIR)
+	gmsh -format msh2 -2 -setnumber levels 1 -o $@ $< 
+
+$(DIR)/%_L2.msh: %.geo | $(DIR)
+	gmsh -format msh2 -2 -setnumber levels 2 -o $@ $< 
+
+$(DIR)/%_L3.msh: %.geo | $(DIR)
+	gmsh -format msh2 -2 -setnumber levels 3 -o $@ $< 
+
+$(DIR)/%_L4.msh: %.geo | $(DIR)
+	gmsh -format msh2 -2 -setnumber levels 4 -o $@ $< 
+
+$(DIR)/%.xml : $(DIR)/%.msh 
 	dolfin-convert $< $@
 
-$(DATA)/%.msh: %.geo | $(DATA)
-	gmsh -2 $< -o $@ -format msh2
-
+#%.xml %_physical_region.xml %_facet_region.xml : %.msh
+#	dolfin-convert $*.msh $*.xml
 
 clean:
-	rm  $(DATA)/*.xml
-	#rm  $(DATA)/*.h5
-	#rm -rf $(DATA)
+	rm -rf $(DIR)
+	#rm mesh_ALE_L?.h5

@@ -71,14 +71,11 @@ class Flow(object):
     that solves equations in each time step and  then saves the obtained results.
     """
     def __init__(self, mesh, bndry, interface, v_max, lambda_s, mu_s, rho_s, 
-                 mu_f, rho_f, mesh_move, t_end, time_discretization, dt_atol, dt_rtol,
+                 mu_f, rho_f, t_end, time_discretization, dt_atol, dt_rtol,
                  result, *args, **kwargs):
         """
         Write boundary conditions, equations and create the files for solution.
         """
-
-        self.E = E
-        self.nu_mesh = nu_mesh
 
         #info("Flow initialization.") 
         self.mesh  = mesh
@@ -91,7 +88,6 @@ class Flow(object):
         self.mu_s     = mu_s
         self.rho_s    = rho_s
         
-        self.mesh_move = mesh_move
         self.bndry = bndry
         self.interface = interface
 
@@ -235,8 +231,8 @@ class Flow(object):
 
         self.solver.ksp.setType('preonly')
         self.solver.pc.setType('lu')
-        #self.solver.pc.setFactorSolverPackage('mumps')		# fenics 2018 (petsc4py 3.8)
-        self.solver.pc.setFactorSolverType('mumps')		# fenics 2019 (petsc4py 3.10)
+        self.solver.pc.setFactorSolverPackage('mumps')		# fenics 2018 (petsc4py 3.8)
+        #self.solver.pc.setFactorSolverType('mumps')		# fenics 2019 (petsc4py 3.10)
         
         # use adaptive timestep (no petsc4py interface for this)
         opts['ts_adapt_type'] = 'basic' # 'none' # 
@@ -427,7 +423,7 @@ benchmark = options.benchmark
 
 # name of mesh
 mesh_name = options.mesh_name
-relative_path_to_mesh = '../meshes/'+mesh_name+'.h5'
+relative_path_to_mesh = 'meshes/'+mesh_name+'.h5'
 
 # time discretization scheme
 time_discretization = options.time_discretization
@@ -513,7 +509,7 @@ tag.begin('Total_ALE_PETSc')
 
 if time_discretization == 'BDF_CN':
     flow = Flow(mesh, bndry, interface, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, 
-             mesh_move, t_end, 'BDF', atol, rtol, E, nu_mesh, result)
+             t_end, 'BDF', atol, rtol, result)
     flow.solver.ts.setTime(0.0)
     flow.solver.ts.setMaxTime(2.0)
     its, ok = flow.solve()

@@ -1,3 +1,22 @@
+"""
+This is part of Master Thesis by Vojtech Kubac.
+
+This code solves FSI2 and FSI3 Bencmarks from
+    "S. Turek and J. Hron, “Proposal for numerical benchmarking of fluid–
+     structure interaction between an elastic object and laminar incompress-
+     ible flow,” in Fluid-Structure Interaction - Modelling, Simulation, Opti-
+     mization, ser. Lecture Notes in Computational Science and Engineering,"
+
+The equations are written in Total-ALE formulation, where for the mesh movement pseudoelasticity
+extension of the solid displacement was used.
+
+Chosen Finite Elements are linear discontinuous space for pressure and quadratic continuous space
+enriched with quadratic bubble is used for displacement and velocity.
+
+Time discretization scheme is theta-scheme with default value 0.5, which means Crank-Nicolson.
+The equation for pressure and incompressibility equation are discretized by implicit Euler.
+"""
+
 from dolfin import *
 from dolfin import __version__
 import mshr
@@ -6,12 +25,14 @@ import csv
 import sys
 import os.path
 from mpi4py.MPI import COMM_WORLD
+from optparse import OptionParser
 
 
-if __version__[:4] == '2018':
-    comm = MPI.comm_world
-else:
+# Define MPI World
+if __version__[:4] == '2017':
     comm = mpi_comm_world()
+else:
+    comm = MPI.comm_world
 my_rank = comm.Get_rank()
 
 # Use UFLACS to speed-up assembly and limit quadrature degree
@@ -26,6 +47,15 @@ PETScOptions.set('mat_mumps_icntl_24', 1)		# detects null pivots
 PETScOptions.set('mat_mumps_cntl_1', 0.01)		# set treshold for partial treshold pivoting, 0.01 is default value
 
 class Problem(NonlinearProblem):
+    """
+    Nonlinear problem for solving System of nonlinear equations that arises from 
+    Finite Elemnt discretization of the equtions describing the FSI phenomenon.
+
+    It inherites methods from FEniCS class NonlinearProblem. But redefines methods 'F' and 'J'
+    in such a way that it nulls elements corresponding to the artificial mesh-moving equation
+    on the interface with elastic solid. This guarantees that the mesh-moving ALE equation for fluid
+    does not influence the solution to elasticity displacement.
+    """
     def __init__(self, F_mesh, FF, dF_mesh, dF, bcs_mesh, bcs):
         NonlinearProblem.__init__(self)
         self.F_mesh = F_mesh
@@ -67,8 +97,15 @@ class Problem(NonlinearProblem):
 
 
 class Flow(object):
+    """
+    Class where the equations for the FSI are defined. It possesses methods 'solve' and 'save'
+    that solves equations in each time step and  then saves the obtained results.
+    """
     def __init__(self, mesh, bndry, interface, dt, theta, v_max, lambda_s, mu_s, rho_s, 
-                 mu_f, rho_f, mesh_move, result, *args, **kwargs):
+                 mu_f, rho_f, result, *args, **kwargs):
+        """
+        Write boundary conditions, equations and create the files for solution.
+        """
 
         self.mesh  = mesh
         self.dt    = Constant(dt)
@@ -82,7 +119,6 @@ class Flow(object):
         self.mu_s     = mu_s
         self.rho_s    = rho_s
         
-        self.mesh_move = mesh_move
         self.bndry = bndry
         self.interface = interface
 
@@ -91,12 +127,13 @@ class Flow(object):
         self.bb.build(self.mesh)
 
         # Define finite elements
-        eV = VectorElement("CG",     mesh.ufl_cell(), 2)	# velocity element
-        eB = VectorElement("Bubble", mesh.ufl_cell(), 3)        # Bubble element
-        eU = VectorElement("CG",     mesh.ufl_cell(), 2)	# displacement element
-        eP = FiniteElement("DG",      mesh.ufl_cell(), 1)       # pressure element
-        eW = MixedElement([eV, eB, eU, eB, eP])			# function space
-        W  = FunctionSpace(self.mesh, eW)
+        eV = VectorElement("CG", mesh.ufl_cell(), 2)		# velocity element
+        eB = VectorElement("Bubble", mesh.ufl_cell(), mesh.geometry().dim()+1) # Bubble element
+        eU = VectorElement("CG", mesh.ufl_cell(), 2)		# displacement element
+        eP = FiniteElement("DG", mesh.ufl_cell(), 1)		# pressure element
+
+        eW = MixedElement([eV, eB, eU, eB, eP])                 # final mixed element
+        W  = FunctionSpace(self.mesh, eW)                       # mixed space
         self.W = W
         self.V = FunctionSpace(self.mesh, eV)
 
@@ -105,6 +142,7 @@ class Flow(object):
                       v_max*4/(gW*gW)*(x[1]*(gW - x[1]))", "0.0"),
                       degree = 2, v_max = Constant(self.v_max), gW = Constant(gW), t = self.t)
 
+        #info("Expression set.")
         bc_v_in     = DirichletBC(self.W.sub(0), self.v_in,            bndry, _INFLOW)
         bc_v_walls  = DirichletBC(self.W.sub(0), Constant((0.0, 0.0)), bndry, _WALLS)
         bc_v_circle = DirichletBC(self.W.sub(0), Constant((0.0, 0.0)), bndry, _CIRCLE)
@@ -114,18 +152,23 @@ class Flow(object):
         bc_u_out    = DirichletBC(self.W.sub(2), Constant((0.0, 0.0)), bndry, _OUTFLOW)
         self.bcs = [bc_v_in, bc_v_walls, bc_v_circle, bc_u_in, bc_u_walls, bc_u_circle, bc_u_out]
 
+        #info("Mesh BC.")
         bc_mesh = DirichletBC(self.W.sub(2), Constant((0.0, 0.0)), interface, _FSI)
         self.bcs_mesh = [bc_mesh]
 
 
+        #info("Normal and Circumradius.")
         self.n = FacetNormal(self.mesh)
+        self.h = Circumradius(self.mesh)
         I = Identity(self.W.mesh().geometry().dim())
 
         # Define functions
-        self.w  = Function(self.W)      
-        self.w0 = Function(self.W)
+        self.w  = Function(self.W)      # solution to current time step
+        self.w0 = Function(self.W)      # solution from previous time step
 
         (v__, bv_, u__, bu_, p_) = TestFunctions(self.W)
+
+        # sum bubble elements with corresponding Lagrange elements
         v_ = v__ + bv_
         u_ = u__ + bu_
         (v, bv, u, bu, self.p) = split(self.w)
@@ -135,6 +178,7 @@ class Flow(object):
         self.v0 = v0 + bv0
         self.u0 = u0 + bu0
 
+
         # define deformation gradient, Jacobian
         self.FF  = I + grad(self.u)
         self.FF0 = I + grad(self.u0)
@@ -142,37 +186,48 @@ class Flow(object):
         self.JJ0 = det(self.FF0)
 
         # write ALE mesh movement 
-        E_mesh = Expression("( pow(x[0] - 0.425, 2) < 0.04 ? sqrt(pow(x[1] - 0.2, 2)) : \
-                    pow(x[1] - 0.2, 2) < 0.0001 ? sqrt(pow(x[0] - 0.425, 2)): \
-                    sqrt(pow(x[0] - 0.425, 2) + pow(x[1] - 0.2, 2)) ) < 0.06 ? \
-                    1e06 : 8e04", degree=1)
+        self.gamma = 9.0/8.0
+        h = CellVolume(self.mesh)**(self.gamma)
+        E = Constant(1.0)
 
-        nu_mesh = Constant(-0.1)
+        E_mesh = E/h
+        nu_mesh = Constant(-0.02)
+
         mu_mesh = E_mesh/(2*(1.0+nu_mesh))
         lambda_mesh = (nu_mesh*E_mesh)/((1+nu_mesh)*(1-2*nu_mesh))
 
         F_mesh = inner(mu_mesh*2*sym(grad(self.u)), grad(u_))*dx(0) \
                           + lambda_mesh*inner(div(self.u), div(u_))*dx(0)
 
+
+        # define referential Grad and Div shortcuts
+        def Grad(f, F): return dot( grad(f), inv(F) )
+        def Div(f, F): return tr( Grad(f, F) )
+
         # approximate time derivatives
         du = (1.0/self.dt)*(self.u - self.u0)
         dv = (1.0/self.dt)*(self.v - self.v0)
 
-        # compute 1st Piola-Kirchhoff tensor for fluid
-        self.S_f  = self.JJ *( -self.p*I  + 2*self.mu_f*sym(grad(self.v )) )*inv(self.FF).T
-        self.S_f0 = self.JJ0*( 2*self.mu_f*sym(grad(self.v0)) )*inv(self.FF0).T \
-                     - self.JJ *(self.p*I)*inv(self.FF).T
+        # compute velocuty part of Cauchy stress tensor for fluid
+        self.T_f  = -self.p*I + 2*self.mu_f*sym(Grad(self.v,  self.FF))
+        self.T_f0 = -self.p*I + 2*self.mu_f*sym(Grad(self.v0, self.FF0))
 
+        # Compute 1st Piola-Kirhhoff tensro for fluid 
+        #       - for computing surface integrals for forces in postprocessing 
+        self.S_f  = self.JJ *self.T_f*inv(self.FF).T
+        
         # write equations for fluid
-        a_fluid  = inner(self.S_f , grad(v_))*dx(0) \
-                   + inner(self.JJ *self.rho_f*grad(self.v )*inv(self.FF ).T*(self.v  - du), v_)*dx(0)
-        a_fluid0 = inner(self.S_f0, grad(v_))*dx(0) \
-                   + inner(self.JJ0*self.rho_f*grad(self.v0)*inv(self.FF0).T*(self.v0 - du), v_)*dx(0)
+        a_fluid  = inner(self.T_f , Grad(v_, self.FF))*self.JJ*dx(0) \
+               - inner(self.p, Div(v_, self.FF))*self.JJ*dx(0) \
+               + inner(self.rho_f*Grad(self.v, self.FF )*(self.v  - du), v_)*self.JJ*dx(0)
+        a_fluid0 = inner(self.T_f0, Grad(v_, self.FF0))*self.JJ0*dx(0) \
+               - inner(self.p, Div(v_, self.FF))*self.JJ*dx(0) \
+               + inner(self.rho_f*Grad(self.v0, self.FF0)*(self.v0 - du), v_)*self.JJ0*dx(0)
 
-        b_fluid  = inner(div(self.JJ *inv(self.FF )*self.v ), p_)*dx(0)
-        b_fluid0 = inner(div(self.JJ *inv(self.FF )*self.v ), p_)*dx(0)
+        b_fluid  = inner(Div( self.v, self.FF ), p_)*self.JJ*dx(0)
+        b_fluid0 = inner(Div( self.v, self.FF ), p_)*self.JJ*dx(0)
 
-        self.F_fluid  = self.JJ*self.rho_f*inner(dv, v_)*dx(0) \
+        self.F_fluid  = (self.theta*self.JJ+(1.0 - self.theta)*self.JJ0)*self.rho_f*inner(dv, v_)*dx(0)\
                    + self.theta*(a_fluid + b_fluid) + (1.0 - self.theta)*(a_fluid0 + b_fluid0) \
                    + F_mesh
 
@@ -183,18 +238,16 @@ class Flow(object):
         S_s0 = self.FF0*(0.5*self.lambda_s*tr(B_s0 - I)*I + self.mu_s*(B_s0 - I))
 
         # write equation for solid
+        alpha = Constant(1.0) # Constant(1e10) #
         self.F_solid = rho_s*inner(dv, v_)*dx(1) \
-                   + self.theta*inner(S_s , grad(v_))*dx(1) \
-                   + (1.0 - self.theta)*inner(S_s0, grad(v_))*dx(1) \
-                   + inner(du - (self.theta*self.v + (1.0 - self.theta)*self.v0), u_)*dx(1)
+                   + self.theta*inner(S_s , grad(v_))*dx(1) + (1.0 - self.theta)*inner(S_s0, grad(v_))*dx(1) \
+                   + alpha*inner(du - (self.theta*self.v + (1.0 - self.theta)*self.v0), u_)*dx(1)
 
-        # write final equation
-        F = self.F_solid
 
-        dF = derivative(F, self.w)
-        dF_fluid= derivative(self.F_fluid, self.w)
+        dF_solid = derivative(self.F_solid, self.w)
+        dF_fluid = derivative(self.F_fluid, self.w)
 
-        self.problem = Problem(self.F_fluid, F, dF_fluid, dF, self.bcs_mesh, self.bcs)
+        self.problem = Problem(self.F_fluid, self.F_solid, dF_fluid, dF_solid, self.bcs_mesh, self.bcs)
         self.solver = NewtonSolver()
 
         # configure solver parameters
@@ -203,8 +256,9 @@ class Flow(object):
         self.solver.parameters['linear_solver']      = 'mumps'
 
         # create files for saving
-        if not os.path.exists(result):
-            os.makedirs(result)
+        if my_rank == 0:
+            if not os.path.exists(result):
+                os.makedirs(result)
         self.vfile = XDMFFile("%s/velocity.xdmf" % result)
         self.ufile = XDMFFile("%s/displacement.xdmf" % result)
         self.pfile = XDMFFile("%s/pressure.xdmf" % result)
@@ -213,10 +267,11 @@ class Flow(object):
         self.ufile.parameters["flush_output"] = True
         self.pfile.parameters["flush_output"] = True
         self.sfile.parameters["flush_output"] = True
-        self.data = open(result+'/data.csv', 'w')
-        self.writer = csv.writer(self.data, delimiter=';', lineterminator='\n')
-        self.writer.writerow(['time', 'mean pressure on outflow', 'pressure difference', 
+        with open(result+'/data.csv', 'w') as data_file:
+            writer = csv.writer(data_file, delimiter=';', lineterminator='\n')
+            writer.writerow(['time', 'mean pressure on outflow', 'pressure_jump', 
                               'x-coordinate of end of beam', 'y-coordinate of end of beam',
+                              'pressure difference', 
                               'drag_circle', 'drag_fluid', 'drag_solid', 'drag_fullfluid',
                               'lift_circle', 'lift_fluid', 'lift_solid', 'lift_fullfluid'])
 
@@ -230,8 +285,6 @@ class Flow(object):
 
     def save(self, t):
         (v, b1, u, b2, p) = self.w.split()
-        v = project(v + b1, self.V)
-        u = project(u + b2, self.V)
 
         v.rename("v", "velocity")
         u.rename("u", "displacement")
@@ -240,11 +293,12 @@ class Flow(object):
         self.ufile.write(u, t)
         self.pfile.write(p, t)
         P = assemble(self.p*ds(_OUTFLOW))/gW
+        PI  = assemble(abs(jump(self.p))*dS(_FSI))
 
         # Compute drag and lift
         force = dot(self.S_f, self.n)
-        D_C = -assemble(force[0]*dss(1))
-        L_C = -assemble(force[1]*dss(1))
+        D_C = -assemble(force[0]*dss(_FLUID_CYLINDER))
+        L_C = -assemble(force[1]*dss(_FLUID_CYLINDER))
 
         w_ = Function(self.W)
         Fbc = DirichletBC(self.W.sub(0), Constant((1.0, 0.0)), self.interface, _FSI)
@@ -278,7 +332,7 @@ class Flow(object):
         L_FF = -assemble(action(self.F_fluid,w_))
 
 
-        #info("Extracting values")
+        # MPI trick to extract displacement of the end of the beam
         self.w.set_allow_extrapolation(True)
         pA_loc = self.p((A.x(), A.y()))
         pB_loc = self.p((B.x(), B.y()))
@@ -287,7 +341,6 @@ class Flow(object):
         Ay_loc = self.u[1]((A.x(), A.y()))
         self.w.set_allow_extrapolation(False)
         
-        #info("collision for A.")
         pi = 0
         if self.bb.compute_first_collision(A) < 4294967295:
             pi = 1
@@ -307,33 +360,95 @@ class Flow(object):
         pB = MPI.sum(comm, pB_loc) / MPI.sum(comm, pi)
         p_diff = pB - pA
 
-        self.writer.writerow([t, P, p_diff, Ax, Ay, D_C, D_F, D_S, D_FF, L_C, L_F, L_S, L_FF])
-
-    def get_integrals(self):
-        self.area        = assemble(1*dx)
-        area_fluid       = assemble(1*dx(0))
-        area_solid       = assemble(1*dx(1))
-        elastic_surface  = assemble(1*dS(_FSI))
-        solid_surface    = elastic_surface + assemble(1*dss(_FLUID_CYLINDER))
-
+        # write computed quantities to a csv file
         if my_rank == 0:
-            info("area of the whole domain = {}, \narea of fluid domain = {},".format(self.area,
-                                                                                   area_fluid ))
-            info("area of solid domain = {}, \nelastic surface = {}, \nsolid surface = {}".format(
-                                        area_solid, elastic_surface, solid_surface))
-            info("Degrees of freedom = {}".format(self.W.dim()))
-                 
+            with open(result+'/data.csv', 'a') as data_file:
+                writer = csv.writer(data_file, delimiter=';', lineterminator='\n')
+                writer.writerow([t, P, PI, Ax, Ay, p_diff, D_C, D_F, D_S, D_FF, L_C, L_F, L_S, L_FF])
 
-if len(sys.argv) > 1:
-    benchmark = str(sys.argv[1])
+
+
+def get_benchmark_specification(benchmark = 'FSI1'):
+    """
+    Method for obtaining the right problem-specific constants.
+    """
+    if benchmark == 'FSI1':
+        rho_s = Constant(1e03)
+        nu_s = Constant(0.4)
+        mu_s = Constant(5e05)
+        rho_f = Constant(1e03)
+        nu_f = Constant(1e-03)
+        U = 0.2
+        T_end = 60.0
+        result = "results-FSI1/"
+    elif benchmark == 'FSI2':
+        rho_s = Constant(1e04)
+        nu_s = Constant(0.4)
+        mu_s = Constant(5e05)
+        rho_f = Constant(1e03)
+        nu_f = Constant(1e-03)
+        U = 1.0
+        T_end = 15.0
+        result = "results-FSI2/"		
+    elif benchmark == 'FSI3':
+        rho_s = Constant(1e03)
+        nu_s = Constant(0.4)
+        mu_s = Constant(2e06)
+        rho_f = Constant(1e03)
+        nu_f = Constant(1e-03)
+        U = 2.0
+        T_end = 20.0
+        result = "results-FSI3/"		
+    else:
+        raise ValueError('"{}" is a wrong name for problem specification.'.format(benchmark))
+    v_max = Constant(1.5*U)     # mean velocity to maximum velocity 
+                                #      (we have parabolic profile)
+    E_s = Constant(2*mu_s*(1+nu_s))
+    lambda_s = Constant((nu_s*E_s)/((1+nu_s)*(1-2*nu_s)))
+    mu_f = Constant(nu_f*rho_f)
+    return v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, T_end, result
+
+
+# set problem and its discretization
+parser = OptionParser()
+parser.add_option("--benchmark", dest="benchmark", default='FSI2')
+parser.add_option("--mesh", dest="mesh_name", default='mesh_ALE_L1')
+parser.add_option("--dt", dest="dt", default='0.001')
+parser.add_option("--dt_scheme", dest="dt_scheme", default='CN')	# BE BE_CN
+
+(options, args) = parser.parse_args()
+
+# name of benchmark 
+benchmark = options.benchmark
+
+# name of mesh
+mesh_name = options.mesh_name
+relative_path_to_mesh = 'meshes/'+mesh_name+'.h5'
+
+# time step size
+dt = options.dt
+
+# time stepping scheme
+dt_scheme = options.dt_scheme
+
+# choose theta according to dt_scheme
+if dt_scheme in ['BE', 'BE_CN']:
+    theta = Constant(1.0)
+elif dt_scheme == 'CN':
+    theta = Constant(0.5)
 else:
-    benchmark = 'FSI1'
+    raise ValueError('Invalid argument for dt_scheme')
+
+v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, t_end, result = get_benchmark_specification(benchmark)
+result = result + 'dt_' + str(dt) + '/' + dt_scheme + '/' + mesh_name[:-3] + '/' + mesh_name[-2:]
 
 # load mesh with boundary and domain markers
 sys.path.append('.')
-import utils 
+import marker
 
-(mesh, bndry, domains, interface, A, B) = utils.give_gmsh_mesh('meshes/mesh2.h5')
+#(mesh, bndry, domains, interface, A, B) \
+#        = marker.give_marked_mesh(mesh_coarseness = mesh_coarseness, refinement = True, ALE = True)
+(mesh, bndry, domains, interface, A, B) = marker.give_gmsh_mesh(relative_path_to_mesh)
 
 # domain (used while building mesh) - needed for inflow condition
 gW = 0.41
@@ -354,34 +469,11 @@ ds  = ds(domain=mesh, subdomain_data = bndry)
 dss = ds(domain=mesh, subdomain_data = interface)
 dS  = dS(domain=mesh, subdomain_data = interface)
 
-v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, t_end, dt, result \
-        = utils.get_benchmark_specification(benchmark)
-result = 'Total_ALE_' + result + '_'
-theta = Constant(0.5)
-
-flow = Flow(mesh, bndry, interface, dt, theta, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, 
-             mesh_move, result)
-
-flow.get_integrals()
+flow = Flow(mesh, bndry, interface, dt, theta, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, result)
 
 t = 0.0
 
-
-flow.theta.assign(1.0)
-if benchmark == 'FSI3':
-    dt = 0.0002
-    while  t < 0.001:
-        if my_rank == 0: 
-            info("t = %.4f, t_end = %.1f" % (t, t_end))
-        flow.solve(t, dt)
-        flow.save(t)
-
-        t += float(dt)
-    dt = 0.0005
-
-    
-
-while  t < 2.0:
+while t < 2.0:
     if my_rank == 0: 
         info("t = %.4f, t_end = %.1f" % (t, t_end))
     flow.solve(t, dt)
@@ -389,8 +481,8 @@ while  t < 2.0:
 
     t += float(dt)
 
-if benchmark == 'FSI2':
-    flow.theta.assign(0.5)
+if dt_scheme == 'BE_CN': flow.theta.assign(0.5)
+
 while  t < t_end:
     if my_rank == 0: 
         info("t = %.4f, t_end = %.1f" % (t, t_end))
@@ -398,5 +490,3 @@ while  t < t_end:
     flow.save(t)
 
     t += float(dt)
-
-flow.data.close()

@@ -1,6 +1,7 @@
 from dolfin import *
 from dolfin import __version__
 import mshr
+import os.path
 
 # mesh specific constants
 gW = 0.41		# width of the domain
@@ -20,7 +21,51 @@ _WALLS   = 2
 _CIRCLE  = 3
 _OUTFLOW = 4
 
-def generate_mesh(par, refinement, ALE):
+# interface marks
+_FSI = 1
+_FLUID_CYLINDER = 2
+
+
+def give_gmsh_mesh(name):
+    if not os.path.isfile(name):
+        raise ValueError('{} is an invalid name for gmsh mesh.'.format(name))
+
+    mesh = Mesh()
+    hdf = HDF5File(mesh.mpi_comm(), name, 'r')
+    hdf.read(mesh, '/mesh', False)
+    domains = MeshFunction('size_t', mesh, 2, mesh.domains())
+    #domains.set_all(0)
+    hdf.read(domains, '/domains')
+    #hdf.read(domains, '/subdomains')
+    bndry = MeshFunction('size_t', mesh, 1)
+    #bndry.set_all(0)
+    hdf.read(bndry, '/bndry')    
+    #hdf.read(bndry, '/boundaries')    
+    interface = MeshFunction('size_t', mesh, 1)
+    interface.set_all(0)
+    
+    for f in facets(mesh):
+        if f.exterior():
+            mp = f.midpoint()
+            if bndry[f] == _CIRCLE and not(mp[0] > gX and mp[1] < gY + 0.5*gEH + DOLFIN_EPS \
+                    and mp[1] > gY - 0.5*gEH - DOLFIN_EPS):
+                interface[f] = _FLUID_CYLINDER
+        else:
+            flag = 0
+            for c in cells(f):
+                if domains[c] == 0:
+                    flag |= 1
+                if domains[c] == 1:
+                    flag |= 2
+            if flag == 3:
+                interface[f] = _FSI
+
+    return(mesh, bndry, domains, interface, A, B)
+
+
+def generate_mesh(name, par=40, refinement=False, ALE=True):
+
+    info('Generating mesh {} ...'.format(name))
 
     # construct mesh
     geometry = mshr.Rectangle(Point(0.0, 0.0), Point(gL, gW)) - mshr.Circle(Point(gX, gY), g_radius, 20)
@@ -30,7 +75,7 @@ def generate_mesh(par, refinement, ALE):
     mesh = mshr.generate_mesh(geometry, par)
 
     if refinement:
-        parameters["refinement_algorithm"] = "plaza_with_parent_facets"
+        parameters['refinement_algorithm'] = 'plaza_with_parent_facets'
         for k in range(2):		# 2
             cf = MeshFunction('bool', mesh, 2)
             cf.set_all(False)
@@ -44,19 +89,42 @@ def generate_mesh(par, refinement, ALE):
 
     mesh.init()
 
+    # Save mesh
+    if __version__[:4] == '2017':
+        hdf5 = HDF5File(mpi_comm_world(), name, 'w')
+    else:
+        hdf5 = HDF5File(MPI.comm_world, name, 'w')
+    hdf5.write(mesh, '/mesh')
+
     return(mesh)
 
 def give_marked_mesh(mesh_coarseness = 40, refinement = False, ALE = True):
     '''
-    Generates mesh and defines boundary and domain classification functions.
+    Loads/Generates mesh and defines boundary and domain classification functions.
     If ALE == True, then the mesh fits the initial position of elastic beam,
     otherwise it is ignored.
     '''
 
-    info("Generating mesh...")
+    # Generate name of the mesh
+    name = '../meshes/mesh{}'.format(mesh_coarseness)	# assume calling from code computing FSI
+    if refinement:
+        name += '_refined'
+    if ALE:
+        name += '_ALE'
+    name += '.h5'
 
-    mesh = generate_mesh(mesh_coarseness, refinement, ALE)
+    # Load existing mesh or generate new one
+    if os.path.isfile(name):
+        mesh = Mesh()
+        if __version__[:4] == '2017':
+            hdf5 = HDF5File(mpi_comm_world(), name, 'r')
+        else:
+            hdf5 = HDF5File(MPI.comm_world, name, 'r')
+        hdf5.read(mesh, '/mesh', False)
+    else:
+        mesh = generate_mesh(name, mesh_coarseness, refine, ALE)
 
+    # mark subdomains
     class Cylinder(SubDomain):
         def snap(self, x):
             r = sqrt((x[0] - gX)**2 + (x[1] - gY)**2)
@@ -77,13 +145,11 @@ def give_marked_mesh(mesh_coarseness = 40, refinement = False, ALE = True):
     elasticity = Elasticity()
 
     # construct facet and domain markers
-    bndry             = MeshFunction('size_t', mesh, 1)		# boundary conditions marker 
-    interface         = MeshFunction('size_t', mesh, 1)		# interface marker
-    unelastic_surface = MeshFunction('size_t', mesh, 1)		# circle surface neighbouring with fluid (not with elastic solid)
-    domains           = MeshFunction('size_t', mesh, 2, mesh.domains())
+    bndry     = MeshFunction('size_t', mesh, 1)		# boundary marker 
+    interface = MeshFunction('size_t', mesh, 1)		# boundary marker 
+    domains   = MeshFunction('size_t', mesh, 2, mesh.domains())
     bndry.set_all(0)
     interface.set_all(0)
-    unelastic_surface.set_all(0)
     domains.set_all(0)
     elasticity.mark(domains, 1)
 
@@ -97,14 +163,15 @@ def give_marked_mesh(mesh_coarseness = 40, refinement = False, ALE = True):
                 bndry[f] = _WALLS			
             elif near(mp[0], gL):
                 bndry[f] = _OUTFLOW		
-            elif bndry[f] == _CIRCLE and mp[0] > gX and mp[1] < gY + gEH + DOLFIN_EPS \
-                    and mp[1] > gY - gEH - DOLFIN_EPS:
-                unelastic_surface[f] = 1
+            elif bndry[f] == _CIRCLE and not(mp[0] > gX and mp[1] < gY + 0.5*gEH + DOLFIN_EPS \
+                    and mp[1] > gY - 0.5*gEH - DOLFIN_EPS):
+                interface[f] = _FLUID_CYLINDER
             else:
                 if bndry[f] != _CIRCLE:
-                    raise ValueError('Unclassified exterior facet with midpoint [%.3f, %.3f].' \
+                    raise RuntimeError('Unclassified exterior facet with midpoint [%.3f, %.3f].' \
                         % (mp.x(), mp.y()))
         else:
+        #if 1:
             flag = 0
             for c in cells(f):
                 if domains[c] == 0:
@@ -112,12 +179,20 @@ def give_marked_mesh(mesh_coarseness = 40, refinement = False, ALE = True):
                 if domains[c] == 1:
                     flag |= 2
             if flag == 3:
-                interface[f] = 1
+                interface[f] = _FSI
 
-    info("\t -done") 
-    return(mesh, bndry, interface, unelastic_surface, domains, A, B)
+    #for f in facets(elasticity):
+    #    flag = 0
+    #    for c in cells(f):
+    #        if domain[c] == 0:
+    #            flag = 1
+    #    if flag == 1:
+    #        interface[f] = 1
 
-def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40, refinement = False):
+    #info('\t -done') 
+    return(mesh, bndry, domains, interface, A, B)
+
+def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40, refine = False):
     # generate multimesh
     approx_circle_with_edges = 20
     beam_mesh_length = g_radius + 1.5*gEL
@@ -130,8 +205,8 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
     bg_geometry = mshr.Rectangle(Point(0.0, 0.0), Point(gL, gW)) - \
                      mshr.Circle(Point(gX, gY), g_radius, approx_circle_with_edges)
     bg_mesh = mshr.generate_mesh(bg_geometry, background_coarseness)
-    if refinement:
-        parameters["refinement_algorithm"] = "plaza_with_parent_facets"
+    if refine:
+        parameters['refinement_algorithm'] = 'plaza_with_parent_facets'
         for k in range(2):		# 2
             cf = MeshFunction('bool', bg_mesh, 2)
             cf.set_all(False)
@@ -226,3 +301,17 @@ def give_marked_multimesh(background_coarseness = 40, elasticity_coarseness = 40
     return(multimesh, 
             inflow_bndry, outflow_bndry, walls, cylinder, 
             ALE_domains, Eulerian_fluid, FS_interface, A, B)
+
+if __name__ == '__main__':
+    
+    for par in [30,40,50,60,70,80]:
+        for refinement in [True, False]:
+            for ALE in [True, False]:
+                name = 'mesh{}'.format(par)
+                if refinement:
+       	            name += '_refined'
+                if ALE:
+                    name += '_ALE'
+                name += '.h5'
+                
+                generate_mesh(name, par, refinement, ALE)
