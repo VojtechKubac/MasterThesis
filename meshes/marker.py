@@ -5,6 +5,17 @@ import os.path
 
 # interface marks
 _FSI = 1
+_FLUID_CYLINDER = 2
+
+# bndry marker
+_CYLINDER = 3
+
+gX = 0.2		# x coordinate of the centre of the circle
+gY = 0.2		# y coordinate of the centre of the circle
+gEH = 0.02		# hight of the elastic part
+
+A = Point(0.6, 0.2)	# point at the end of elastic beam - for pressure comparison
+B = Point(0.15, 0.2)	# point at the surface of rigid circle - for pressure comparison
 
 
 def give_gmsh_mesh(name):
@@ -20,13 +31,9 @@ def give_gmsh_mesh(name):
     dim = mesh.geometry().dim()
 
     domains = MeshFunction('size_t', mesh, dim, mesh.domains())
-    #domains.set_all(0)
     hdf.read(domains, '/domains')
-    #hdf.read(domains, '/subdomains')
     bndry = MeshFunction('size_t', mesh, dim - 1)
-    #bndry.set_all(0)
     hdf.read(bndry, '/bndry')    
-    #hdf.read(bndry, '/boundaries')    
     interface = MeshFunction('size_t', mesh, dim - 1)
     interface.set_all(0)
     
@@ -40,20 +47,10 @@ def give_gmsh_mesh(name):
                     flag |= 2
             if flag == 3:
                 interface[f] = _FSI
+        else:
+            mp = f.midpoint()
+            if bndry[f] == _CYLINDER and not(mp[0] > gX and mp[1] < gY + 0.5*gEH + DOLFIN_EPS \
+                    and mp[1] > gY - 0.5*gEH - DOLFIN_EPS):
+                interface[f] = _FLUID_CYLINDER
 
-    return(mesh, bndry, domains, interface)
-
-
-if __name__ == '__main__':
-    
-    for par in [30,40,50,60,70,80]:
-        for refinement in [True, False]:
-            for ALE in [True, False]:
-                name = 'mesh{}'.format(par)
-                if refinement:
-       	            name += '_refined'
-                if ALE:
-                    name += '_ALE'
-                name += '.h5'
-                
-                generate_mesh(name, par, refinement, ALE)
+    return(mesh, bndry, domains, interface, A, B)

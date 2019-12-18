@@ -449,7 +449,7 @@ v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, t_end, result = get_benchmark_specifi
 result = result + 'dt_' + str(dt) + '/' + dt_scheme + '/' + mesh_name[:-3] + '/' + mesh_name[-2:]
 
 # load mesh with boundary and domain markers
-sys.path.append('.')
+sys.path.append('../meshes')
 import marker
 
 #(mesh, bndry, domains, interface, A, B) \

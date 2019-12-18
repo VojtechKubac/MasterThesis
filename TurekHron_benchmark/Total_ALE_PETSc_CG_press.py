@@ -31,7 +31,7 @@ import csv
 from optparse import OptionParser
 
 sys.path.append(os.getcwd())
-sys.path.append('../../petscsolvers/')
+sys.path.append('../petscsolvers/')
 sys.path.append('.')
 
 import petsc4py
@@ -82,7 +82,7 @@ class Flow(object):
     Class where the equations for the FSI are defined. It possesses methods 'solve' and 'save'
     that solves equations in each time step and  then saves the obtained results.
     """
-    def __init__(self, mesh, bndry, interface, v_max, lambda_s, mu_s, rho_s, 
+    def __init__(self, mesh, domains, bndry, interface, v_max, lambda_s, mu_s, rho_s, 
                  mu_f, rho_f, t_end, time_discretization, dt_atol, dt_rtol,
                  result, *args, **kwargs):
         """
@@ -104,6 +104,7 @@ class Flow(object):
         
         self.bndry = bndry
         self.interface = interface
+        self.domains = domains
 
         # bounding box tree
         self.bb = BoundingBoxTree()
@@ -114,7 +115,7 @@ class Flow(object):
         eU = VectorElement("CG", mesh.ufl_cell(), 2)		# displacement  element
         eP = FiniteElement("CG", mesh.ufl_cell(), 1)		# pressure element
 
-        eW = MixedElement([eU, eV, eP])			# final mixed element
+        eW = MixedElement([eU, eV, eP])			        # final mixed element
         W  = FunctionSpace(self.mesh, eW)                       # mixed function space
         self.W = W
         self.V = FunctionSpace(self.mesh, eV)
@@ -125,8 +126,8 @@ class Flow(object):
                       degree = 2, v_max = Constant(self.v_max), gW = Constant(gW), t = self.t)
 
         #info("Expression set.")
-        bc_v_in     = DirichletBC(self.W.sub(1), self.v_in,            bndry, _INFLOW)
         bc_v_walls  = DirichletBC(self.W.sub(1), Constant((0.0, 0.0)), bndry, _WALLS)
+        bc_v_in     = DirichletBC(self.W.sub(1), self.v_in,            bndry, _INFLOW)
         bc_v_circle = DirichletBC(self.W.sub(1), Constant((0.0, 0.0)), bndry, _CIRCLE)
         bc_u_in     = DirichletBC(self.W.sub(0), Constant((0.0, 0.0)), bndry, _INFLOW)
         bc_u_circle = DirichletBC(self.W.sub(0), Constant((0.0, 0.0)), bndry, _CIRCLE)
@@ -524,6 +525,7 @@ parser.add_option("--benchmark", dest="benchmark", default='FSI2')
 parser.add_option("--mesh", dest="mesh_name", default='mesh_ALE_L1')
 parser.add_option("--time_discretization", dest="time_discretization", default='BDF')
 parser.add_option("--tol", dest="tol", default='a104r104')
+parser.add_option("--restart", dest="restart", default=False, action="store_true")
 
 (options, args) = parser.parse_args()
 
@@ -616,8 +618,8 @@ tag.time()
 tag.begin('Total_ALE_PETSc')
 
 
-flow = Flow(mesh, domains, bndry, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, 
-            mesh_move, t_end, time_discretization, atol, rtol, result)
+flow = Flow(mesh, domains, bndry, interface, v_max, lambda_s, mu_s, rho_s, mu_f, rho_f, 
+            t_end, time_discretization, atol, rtol, result)
 
 if options.restart : flow.read_solution()
 its, ok = flow.solve(restart=options.restart)
